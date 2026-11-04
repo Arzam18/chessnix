@@ -1,1 +1,111 @@
-...
+name: Build Chessnix for Android ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify ARM64 NEON and Dotprod binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install the exact required Zig compiler
+        uses: xyzzylabs/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Verify Zig version
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig version
+          test "$(zig version)" = "0.15.2"
+
+      - name: Install binary inspection and ARM64 emulation tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binutils file qemu-user zip
+
+      - name: Build ARM64 NEON static executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build \
+            -Dtarget=aarch64-linux-musl \
+            -Dcpu=generic+neon \
+            -Doptimize=ReleaseFast \
+            --prefix "$GITHUB_WORKSPACE/out/neon"
+          install -D -m 0755 out/neon/bin/chessnix dist/chessnix-android-arm64-neon
+
+      - name: Build ARM64 Dotprod-capable static executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build \
+            -Dtarget=aarch64-linux-musl \
+            -Dcpu=generic+neon+dotprod \
+            -Doptimize=ReleaseFast \
+            --prefix "$GITHUB_WORKSPACE/out/dotprod"
+          install -D -m 0755 out/dotprod/bin/chessnix dist/chessnix-android-arm64-dotprod
+
+      - name: Verify ELF architecture and static linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          for binary in dist/chessnix-android-arm64-neon dist/chessnix-android-arm64-dotprod; do
+            echo "===== $binary ====="
+            file "$binary"
+            readelf -h "$binary" | grep -E 'Class:|Machine:|Type:'
+            readelf -h "$binary" | grep -q 'Machine:.*AArch64'
+
+            if readelf -l "$binary" | grep -q 'INTERP'; then
+              echo "ERROR: $binary unexpectedly requires a dynamic interpreter" >&2
+              exit 1
+            fi
+            if readelf -d "$binary" 2>/dev/null | grep -q 'NEEDED'; then
+              echo "ERROR: $binary has dynamic shared-library dependencies" >&2
+              exit 1
+            fi
+          done
+
+      - name: UCI and depth-2 search smoke test under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/qemu_uci_smoke.py dist/chessnix-android-arm64-neon
+          python3 .github/scripts/qemu_uci_smoke.py dist/chessnix-android-arm64-dotprod
+
+      - name: Create binary package and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Engine: Chessnix"
+            echo "Source version: 1.5 WIP"
+            echo "Zig: $(zig version)"
+            echo "Target ABI: aarch64-linux-musl (static Linux AArch64 ELF for Android use)"
+            echo "NEON CPU target: generic+neon"
+            echo "Dotprod CPU target: generic+neon+dotprod"
+            echo "Optimization: ReleaseFast"
+            echo "Evaluation: handcrafted evaluation (HCE); no NNUE network required"
+            echo "Build commit: ${GITHUB_SHA}"
+            echo "Build date (UTC): $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } > dist/BUILD-INFO.txt
+          (cd dist && sha256sum chessnix-android-arm64-neon chessnix-android-arm64-dotprod > SHA256SUMS)
+          (cd dist && zip -9 -r ../Chessnix-Android-ARM64-Binaries.zip .)
+
+      - name: Upload Android ARM64 binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chessnix-Android-ARM64-Binaries
+          path: Chessnix-Android-ARM64-Binaries.zip
+          if-no-files-found: error
+          retention-days: 30
