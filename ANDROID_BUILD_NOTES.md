@@ -2,6 +2,10 @@
 
 This fork-ready build adds a GitHub Actions workflow for the existing Chessnix UCI engine. It does not change the engine's chess logic or evaluation.
 
+## Source-archive repair
+
+The supplied upstream source ZIP has an unconditional import of `src/local/searchtuner.zig` in `src/main.zig`, but does not contain that file or the `src/local/` directory. The standard UCI build sets `lib.program = .uci`; the search-tuner branch is not used. To allow Zig to resolve the import, this package adds `src/local/searchtuner.zig` as a small placeholder that returns `error.SearchTunerSourceNotIncluded` if the optional, missing search-tuning command is ever selected. The UCI engine path is unchanged.
+
 ## Outputs
 
 - `chessnix-android-arm64-neon`
